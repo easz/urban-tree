@@ -1,0 +1,30 @@
+<html>
+<head>
+  <title>A Map of Urban Trees in Munich City</title>
+  <meta charset="utf-8"/>
+  <meta name="keywords" content="urban trees, map, deep learning, Stadtbäume, München, Munich, Open Data, GIS"/>
+  <style type="text/css">
+    body
+    {
+      padding:0px;
+      margin:0px;
+      background: #f4f4f4;
+      font-family: Verdana, sans-serif;
+    }
+  </style>
+</head>
+<body>
+<div style="text-align: center;"><a href="index.html">Switch to single map view</a></div>
+<div id="observablehq-split_map-241fbc91"></div>
+<script type="module">
+import {Runtime, Inspector} from "https://cdn.jsdelivr.net/npm/@observablehq/runtime@4/dist/runtime.js";
+import define from "https://api.observablehq.com/@easz/munich-urban-tree-canopy.js?v=3";
+new Runtime().module(define, name => {
+  if (name === "split_map") return new Inspector(document.querySelector("#observablehq-split_map-241fbc91"));
+});
+</script>
+</body>
+</html>
+
+
+

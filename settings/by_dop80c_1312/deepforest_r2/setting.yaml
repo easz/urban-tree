@@ -1,0 +1,80 @@
+
+dataset_name: 'by_dop80c_1312'
+profile_name: 'deepforest_r2'
+
+#
+# source map tiles
+#
+source_map_tile_xyz_pattern: 'aerial_images/by_dop80c_1312/{z}/{x}/{y}.png'
+source_map_tile_zoom: 18
+
+#
+# resampled dataset images
+#
+# resampled dataset area bbox in epsg:3857 [left, bottom, right, top]
+# the whole Munich
+dataset_area_bbox:       [1264675.910655933, 6117113.069298123, 1304988.182572239, 6148232.240449293]
+dataset_img_width:       1312
+dataset_img_height:      1312
+dataset_img_overlapping: 96
+
+#
+# dataset splitting
+#
+# train an image which has lower no-data ratio than the give threshold
+# (use '0' to train images without any nodata. use '1' to train all possible images)
+dataset_split_max_nodata_threshold: 0.0
+dataset_split_nr_clusters:          4
+dataset_split_nr_pca_comp:          64
+dataset_split_train_proportion:     0.01
+
+#
+# tree object detection
+#
+pretrained_model_path: 'interim/by_dop80c_1312/deepforest_r1/model/model.ckpt'
+
+model_trainer_patch_sizes:              [256, 450] # list of sizes in px. Note: empty list indicates no cropping
+model_trainer_patch_overlap_size:       64
+model_trainer_min_bbox_size:            80
+model_trainer_min_bbox_ratio:           0.3
+model_trainer_validation_ratio:         0.2
+model_trainer_train_on_validation_data: True
+
+model_params_config:
+  workers: 8
+  gpus: 1
+  distributed_backend: False
+  batch_size: 1
+  nms_thresh: 0.6    # keep it high and eventually updated with model_inference_config[*]['iou_threshold']
+  score_thresh: 0.1  # keep it low and eventually updated with model_inference_config[*]['score_thresh']
+  train:
+    fast_dev_run: False
+    epochs: 50
+    lr: 0.001
+    preload_images: False
+  validation:
+    iou_threshold: 0.4  # for validation purpose
+    val_accuracy_interval: 1
+
+model_inference_config:
+  confident_min_bbox_size: 20
+  confident_min_score: 0.9
+  morphology_factor: 1
+  concurrency: 4
+  patch:
+    - patch_size: 1200
+      patch_overlap: 0.3
+      iou_threshold: 0.8
+      score_thresh: 0.85
+    - patch_size: 800
+      patch_overlap: 0.3
+      iou_threshold: 0.8
+      score_thresh: 0.8
+    - patch_size: 200
+      patch_overlap: 0.2
+      iou_threshold: 0.7
+      score_thresh: 0.
+    - patch_size: 96
+      patch_overlap: 0.18
+      iou_threshold: 0.6
+      score_thresh: 0.65

@@ -1,0 +1,59 @@
+dataset_name: 'by_dop80c_1312'
+profile_name: 'detectree_r1_deepforest_r1'
+
+#
+# source map tiles
+#
+source_map_tile_xyz_pattern: 'aerial_images/opendata_luftbild_dop60_1312/{z}/{x}/{y}.png'
+source_map_tile_zoom: 18
+
+#
+# resampled dataset images
+#
+# resampled dataset area bbox in epsg:3857 [left, bottom, right, top]
+# the whole Munich
+dataset_area_bbox:       [1264675.910655933, 6117113.069298123, 1304988.182572239, 6148232.240449293]
+dataset_img_width:       1312
+dataset_img_height:      1312
+dataset_img_overlapping: 96
+
+#
+# dataset splitting
+#
+# train an image which has lower no-data ratio than the give threshold
+# (use '0' to train images without any nodata. use '1' to train all possible images)
+dataset_split_max_nodata_threshold: 0.0
+dataset_split_nr_clusters:          4
+dataset_split_nr_pca_comp:          64
+dataset_split_train_proportion:     0.01
+
+#
+# tree object detection
+#
+pretrained_model_path: null
+
+model_params_config:
+  # feature
+  sigmas: [2, 3.4641, 6]
+  min_neighborhood_range: 6
+  num_neighborhoods: 3
+  # training
+  tree_val: 255
+  nontree_val: 0
+  num_estimators: 200
+  learning_rate: 1.0
+
+model_inference_config:
+  refine: True
+  refine_beta: 50
+  refine_int_rescale: 10000
+
+postprocess_src_detectree_inference_profile: 'detectree_r1'
+postprocess_src_deepforest_inference_profile: 'deepforest_r1'
+postprocess_config:
+  radius_min_thres: 4
+  radius_max_thres: 30
+  score_min_thres: 0.2
+  morph_size: 2
+  bias_tree_factor: 1.0
+  bias_nontree_factor: 0.9

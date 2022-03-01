@@ -329,7 +329,7 @@ def remove_small_overlapping_bbox(df, iou_threshold):
   boxes = torch.tensor(df[["xmin", "ymin", "xmax", "ymax"]].values, dtype=torch.float32)
   sizes = torch.tensor(df.__size.values, dtype=torch.float32)
   bbox_left_idx = nms(boxes=boxes, scores=sizes, iou_threshold=iou_threshold).numpy()
-  df = df.filter(items = bbox_left_idx, axis=0)
+  df = df.iloc[bbox_left_idx]
   del df['__size']
   return df
 
@@ -361,9 +361,7 @@ def run_nms(df, use_soft_nms=False, iou_threshold=0.15,
                                      thresh=score_threshold).numpy()
   else:
     bbox_left_idx = nms(boxes=boxes, scores=scores, iou_threshold=iou_threshold).numpy()
-
-  return df.filter(items = bbox_left_idx, axis=0)
-
+  return df.iloc[bbox_left_idx]
 
 def infer_image(model, img_path, out_dir,
                 param_model_inference, prefer_model_params_config,

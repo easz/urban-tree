@@ -17,6 +17,8 @@ import scipy.ndimage
 import skimage.morphology
 from concurrent.futures import ThreadPoolExecutor
 import dask
+import shapely
+import geopandas as gpd
 from deepforest import main, preprocess, predict
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
@@ -311,26 +313,37 @@ def train_model(model_params_config,
   #  print("precision:", results['box_precision'])
   #  print("recall:", results['box_recall'])
 
-def remove_small_overlapping_bbox(df, iou_threshold):
+def remove_nested_bbox(df):
   """
-  remove smaller overlapping bbox with nms
+  remove nested bbox
 
   Parameters
   ----------
   df : DataFrame
     inference result with bounding boxes, labels and scores
-  iou_threshold : float
-    IoU threshold for `nms`
   """
-  def bbox_size(bbox):
-    return (bbox['xmax'] - bbox['xmin']) * (bbox['ymax'] - bbox['ymin'])
-  df['__size'] = bbox_size(df)
-  df['__size'] = df['__size'] / df['__size'].max()
-  boxes = torch.tensor(df[["xmin", "ymin", "xmax", "ymax"]].values, dtype=torch.float32)
-  sizes = torch.tensor(df.__size.values, dtype=torch.float32)
-  bbox_left_idx = nms(boxes=boxes, scores=sizes, iou_threshold=iou_threshold).numpy()
-  df = df.iloc[bbox_left_idx]
-  del df['__size']
+  df['__id'] = range(0, df.shape[0]) # make an extra 'id'
+  df['__geometry'] = df.apply(
+      lambda x: shapely.geometry.box(x.xmin, x.ymin, x.xmax, x.ymax), axis=1)
+  ddf = gpd.GeoDataFrame(df, geometry='__geometry')
+  ddf['__area'] = ddf.__geometry.area
+  ddf.sort_values('__area', ascending=False, inplace=True)
+
+  nested_id = set()
+  for iloc in range(ddf.shape[0]):
+      if ddf.iloc[iloc]['__id'] in nested_id:
+          continue
+      bbox = ddf.iloc[iloc]
+      test = ddf.iloc[iloc+1:]
+      nested = test[~test['__id'].isin(nested_id) &
+                    test['__geometry'].within(bbox['__geometry'])]
+      nested_id.update(list(nested['__id']))
+
+  df = df[~df['__id'].isin(nested_id)]
+  del df['__id']
+  del df['__geometry']
+  del df['__area']
+
   return df
 
 def run_nms(df, use_soft_nms=False, iou_threshold=0.15,

@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 import dask
 import shapely
 import geopandas as gpd
-from deepforest import main, preprocess, predict
+from deepforest import main, preprocess, predict, visualize
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from torchvision.ops import nms
@@ -511,6 +511,73 @@ def infer_images(model_path, model_params_config, model_inference_config,
                     out_dir=INFERENCE_RESULT_DIR, param_model_inference=MODEL_INFERENCE,
                     prefer_model_params_config=prefer_model_params_config, continue_mode=CONTINUE_MODE)
 
+def filter_bbox(df, model_inference_config):
+  """
+  filter bounding boxes according to size and scores.
+
+  Parameters
+  ----------
+  df : DataFrame
+    dataframe of bounding boxes
+  model_inference_config : dict
+    model inference config object
+
+  Returns
+  -------
+  DataFrame
+    filtered bounding boxes
+  """
+  # load bbox: filter after score_thresh, keep small trees only with very high scores
+  filtered_df = []
+  for model_inf in model_inference_config['patch']:
+    filtered_df.append(df[(df.patch_size == model_inf['patch_size']) &
+                          (df.score >= model_inf['score_thresh'])])
+  df = pd.concat(filtered_df, ignore_index=True)
+  df = df[(df.score >= model_inference_config['confident_min_score']) |
+          ((df.xmax-df.xmin)*(df.ymax-df.ymin) >= model_inference_config['confident_min_bbox_size'])]
+  return df
+
+def draw_bbox(src_image_path, output_image_path, src_bbox_path=None, src_bbox_df=None):
+  """
+  draw bounding boxes on images
+
+  Parameters
+  ----------
+  src_img_path : str
+    the path to the source image
+  output_image_path : str
+    the path to the output image
+  src_bbox_path : str
+    the path to the bounding box pickle files
+  src_bbox_df : str
+    dataframe of bounding boxes
+  """
+  with rasterio.open(src_image_path) as src:
+    image_crs = src.crs
+    image_transform = src.transform
+    image_height = src.height
+    image_width = src.width
+
+  image = np.array(Image.open(src_image_path).convert("RGB")).astype("uint8")
+  boxes = src_bbox_df if src_bbox_df is not None else pd.read_pickle(src_bbox_path)
+  image = image[:,:,::-1] # RGB => BGR
+  image = visualize.plot_predictions(image, boxes)
+  image = image[:,:,::-1] # BGR => RGB
+
+  DATASET_IMG_META = {
+    'driver': 'GTiff',
+    'dtype':  'uint8',
+    'width':  image_width,
+    'height': image_height,
+    'count':  3,
+    'crs':    image_crs,
+    'transform': image_transform
+  }
+
+  Path(output_image_path).parent.mkdir(parents=True, exist_ok=True)
+  with rasterio.open(output_image_path, 'w', **DATASET_IMG_META) as dst:
+    dst.write(np.moveaxis(image, -1, 0)) # (H, W, C) -> (C, H, W)
+
 def postprocess_render_image(src_img_path, src_bbox_dir,
                              output_img_dir, model_inference_config,
                              continue_mode):
@@ -524,7 +591,7 @@ def postprocess_render_image(src_img_path, src_bbox_dir,
   src_bbox_dir : str
     the path to the folder containing bbox result (*.pkl)
   output_img_dir : str
-    the path to the ouput folder of rendered results
+    the path to the output folder of rendered results
   model_inference_config : dict
     inference parameter
   continue_mode : bool
@@ -546,13 +613,7 @@ def postprocess_render_image(src_img_path, src_bbox_dir,
     image_transform = src.transform
   # load bbox: filter after score_thresh, keep small trees only with very high scores
   df = pd.read_pickle(src_bbox_path)
-  filtered_df = []
-  for model_inf in model_inference_config['patch']:
-    filtered_df.append(df[(df.patch_size == model_inf['patch_size']) &
-                          (df.score >= model_inf['score_thresh'])])
-  df = pd.concat(filtered_df, ignore_index=True)
-  df = df[(df.score >= model_inference_config['confident_min_score']) |
-          ((df.xmax-df.xmin)*(df.ymax-df.ymin) >= model_inference_config['confident_min_bbox_size'])]
+  df = filter_bbox(df=df, model_inference_config=model_inference_config)
   # draw raster result
   out_img = np.zeros(image_shape, np.uint8)
   for _, box in df.iterrows():

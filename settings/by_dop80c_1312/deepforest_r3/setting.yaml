@@ -58,23 +58,23 @@ model_params_config:
 
 model_inference_config:
   confident_min_bbox_size: 20
-  confident_min_score: 0.9
+  confident_min_score: 0.3
   morphology_factor: 1
   concurrency: 4
   patch:
     - patch_size: 1200
       patch_overlap: 0.3
       iou_threshold: 0.8
-      score_thresh: 0.85
+      score_thresh: 0.3
     - patch_size: 800
       patch_overlap: 0.3
       iou_threshold: 0.8
-      score_thresh: 0.8
+      score_thresh: 0.2
     - patch_size: 200
       patch_overlap: 0.2
       iou_threshold: 0.7
-      score_thresh: 0.7
+      score_thresh: 0.1
     - patch_size: 96
       patch_overlap: 0.18
       iou_threshold: 0.6
-      score_thresh: 0.65
+      score_thresh: 0.1

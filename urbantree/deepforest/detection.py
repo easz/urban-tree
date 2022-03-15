@@ -1,28 +1,34 @@
 import os
+from pathlib import Path
 import time
 import math
 import json
 import shutil
-import numpy as np
-import pandas as pd
-from pathlib import Path
-from PIL import Image
-import torch
 import inspect
 import warnings
 import logging
+from concurrent.futures import ThreadPoolExecutor
+import dask
+from copy import deepcopy
+
+import numpy as np
+import pandas as pd
+from PIL import Image
+import torch
 import rasterio
+import rtree
 import cv2
 import scipy.ndimage
 import skimage.morphology
-from concurrent.futures import ThreadPoolExecutor
-import dask
 import shapely
 import geopandas as gpd
-from deepforest import main, preprocess, predict, visualize
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from torchvision.ops import nms
+from deepforest import main, preprocess, predict, visualize
+
+from urbantree.setting import Setting
+
 
 def distance(points):
   """
@@ -313,16 +319,19 @@ def train_model(model_params_config,
   #  print("precision:", results['box_precision'])
   #  print("recall:", results['box_recall'])
 
-def remove_nested_bbox(df):
+def remove_overlapping_bbox(df, iou_threshold=0.7):
   """
-  remove nested bbox
+  remove overlapping bbox.
 
   Parameters
   ----------
   df : DataFrame
     inference result with bounding boxes, labels and scores
   """
-  df['__id'] = range(0, df.shape[0]) # make an extra 'id'
+  if len(df) == 0:
+    return df
+
+  df['__id'] = range(0, df.shape[0]) # make an extra unique 'id'
   df['__geometry'] = df.apply(
       lambda x: shapely.geometry.box(x.xmin, x.ymin, x.xmax, x.ymax), axis=1)
   ddf = gpd.GeoDataFrame(df, geometry='__geometry')
@@ -330,16 +339,46 @@ def remove_nested_bbox(df):
   ddf.sort_values('__area', ascending=False, inplace=True)
 
   nested_id = set()
+  intersected_id = set()
+
   for iloc in range(ddf.shape[0]):
-      if ddf.iloc[iloc]['__id'] in nested_id:
-          continue
-      bbox = ddf.iloc[iloc]
-      test = ddf.iloc[iloc+1:]
-      nested = test[~test['__id'].isin(nested_id) &
-                    test['__geometry'].within(bbox['__geometry'])]
-      nested_id.update(list(nested['__id']))
+    if ddf.iloc[iloc]['__id'] in nested_id:
+      continue
+    if ddf.iloc[iloc]['__id'] in intersected_id:
+      continue
+    bbox  = ddf.iloc[iloc]
+    tests = ddf.iloc[iloc+1:]
+    tests = tests[~tests['__id'].isin(nested_id)]
+    tests = tests[~tests['__id'].isin(intersected_id)]
+    bbox_geom = bbox['__geometry']
+    intersected = tests[tests['__geometry'].intersects(bbox_geom)]
+    f_intersected_nested = intersected['__geometry'].within(bbox_geom)
+    nested = intersected[f_intersected_nested]
+    intersected = intersected[~f_intersected_nested]
+    bbox_c = [(bbox_geom.bounds[2] + bbox_geom.bounds[0])/2, (bbox_geom.bounds[3] + bbox_geom.bounds[1])/2]
+    bbox_r = 0.5 * 0.5 * ((bbox_geom.bounds[2] - bbox_geom.bounds[0]) + (bbox_geom.bounds[3] - bbox_geom.bounds[1]))
+
+    candidate = set(list(nested['__id']))
+    for n in list(nested['__id']):
+      p = tests[tests['__id']==n]['__geometry'].squeeze()
+      p_c = [(p.bounds[2] + p.bounds[0])/2, (p.bounds[3] + p.bounds[1])/2]
+      #p_r = 0.5 * 0.5 * ((p.bounds[2] - p.bounds[0]) + (p.bounds[3] - p.bounds[1]))
+      dist = math.sqrt(math.pow(p_c[0] - bbox_c[0], 2) + math.pow(p_c[1] - bbox_c[1], 2))
+      if dist > bbox_r:
+        candidate.remove(n)
+    nested_id.update(candidate)
+
+    candidate = set(list(intersected['__id']))
+    for n in list(intersected['__id']):
+        p = tests[tests['__id']==n]['__geometry']
+        iou = p.intersection(bbox_geom).area
+        iou = iou / (bbox_geom.area + p.area - iou)
+        if iou.squeeze() < iou_threshold:
+            candidate.remove(n)
+    intersected_id.update(candidate)
 
   df = df[~df['__id'].isin(nested_id)]
+  df = df[~df['__id'].isin(intersected_id)]
   del df['__id']
   del df['__geometry']
   del df['__area']
@@ -364,6 +403,9 @@ def run_nms(df, use_soft_nms=False, iou_threshold=0.15,
   score_threshold : float
     score threshold for `soft nms`
   """
+  if len(df) == 0:
+      return df
+
   boxes = torch.tensor(df[["xmin", "ymin", "xmax", "ymax"]].values, dtype=torch.float32)
   scores = torch.tensor(df.score.values, dtype=torch.float32)
 
@@ -375,6 +417,135 @@ def run_nms(df, use_soft_nms=False, iou_threshold=0.15,
   else:
     bbox_left_idx = nms(boxes=boxes, scores=scores, iou_threshold=iou_threshold).numpy()
   return df.iloc[bbox_left_idx]
+
+def calc_diff(diff_from_setting_path,
+              diff_to_setting_path,
+              diff_from_score_factor,
+              diff_to_score_factor,
+              aggregate_iou_threshold,
+              diff_iou_threshold,
+              output_bbox_dir,
+              diff_from_size_threshold=0,
+              diff_to_size_threshold=0,
+              output_img_dir=None):
+  """
+  determine bbox difference among two datasets.
+
+  Parameters
+  ----------
+  diff_from_setting_path : str
+    setting path of the source dataset
+  diff_to_setting_path : str
+    setting path of the target dataset
+  diff_from_score_factor : float
+    factor of score threshold for the source dataset
+  diff_to_score_factor : float
+    factor of score threshold for the target dataset
+  diff_from_size_threshold : float
+    min size threshold for the source dataset
+  diff_to_size_threshold : float
+    min size threshold for the target dataset
+  aggregate_iou_threshold : float
+    IoU threshold for aggregated bboxes within a dataset
+  diff_iou_threshold : float
+    IoU threshold for a bbox among two dataset
+  output_bbox_dir : str
+    path of output folder for bbox diff result
+  output_img_dir : str
+    path of output folder for debug images drawn with bboxes
+  """
+  diff_from_setting = Setting.load_deepforest_setting(diff_from_setting_path)
+  diff_to_setting   = Setting.load_deepforest_setting(diff_to_setting_path)
+
+  DIFF_FROM_SCORE_FACTOR = diff_from_score_factor
+  DIFF_TO_SCORE_FACTOR = diff_to_score_factor
+
+  DIFF_FROM_SIZE_THRESHOLD = diff_from_size_threshold
+  DIFF_TO_SIZE_THRESHOLD = diff_to_size_threshold
+  AGGREGATED_IOU_THRESHOLD = aggregate_iou_threshold
+  DIFF_IOU_THRESHOLD = diff_iou_threshold
+  DIFF_RESULT_BBOX_DIR = Path(output_bbox_dir)
+
+  DIFF_FROM_BBOX_DIR   = Path(diff_from_setting['dataset_inference_dir']) / 'b'
+  DIFF_TO_BBOX_DIR     = Path(diff_to_setting['dataset_inference_dir'])   / 'b'
+
+  DIFF_FROM_INFERENCE_PARAM = deepcopy(diff_from_setting['model_inference_config'])
+  DIFF_TO_INFERENCE_PARAM   = deepcopy(diff_to_setting['model_inference_config'])
+
+  DIFF_FROM_IMG_DIR = Path(diff_from_setting['dataset_img_dir'])
+  DIFF_TO_IMG_DIR   = Path(diff_to_setting['dataset_img_dir'])
+  OUTPUT_DIFF_IMG_DIR = Path(output_img_dir) if output_img_dir is not None else None
+
+  # tune size and precision
+  if DIFF_FROM_SIZE_THRESHOLD > 0:
+    DIFF_FROM_INFERENCE_PARAM['confident_min_bbox_size'] = DIFF_FROM_SIZE_THRESHOLD
+    DIFF_FROM_INFERENCE_PARAM['confident_min_score']     = 1
+  if DIFF_TO_SIZE_THRESHOLD > 0:
+    DIFF_TO_INFERENCE_PARAM['confident_min_bbox_size'] = DIFF_TO_SIZE_THRESHOLD
+    DIFF_TO_INFERENCE_PARAM['confident_min_score']     = 1
+  for p in DIFF_FROM_INFERENCE_PARAM['patch']:
+    p['score_thresh'] = min(p['score_thresh']*DIFF_FROM_SCORE_FACTOR, 0.95)
+  for p in DIFF_TO_INFERENCE_PARAM['patch']:
+    p['score_thresh'] = p['score_thresh']*DIFF_TO_SCORE_FACTOR
+
+  if DIFF_RESULT_BBOX_DIR.exists() and os.listdir(DIFF_RESULT_BBOX_DIR):
+    raise RuntimeError("Directory is not empty: " + str(DIFF_RESULT_BBOX_DIR))
+  DIFF_RESULT_BBOX_DIR.mkdir(parents=True, exist_ok=True)
+
+  for from_pkl_path in DIFF_FROM_BBOX_DIR.glob('*.pkl'):
+    from_image_path = DIFF_FROM_IMG_DIR / (from_pkl_path.stem + '.tiff')
+    from_boxes = pd.read_pickle(from_pkl_path)
+    from_boxes = filter_bbox(from_boxes, DIFF_FROM_INFERENCE_PARAM)
+    from_boxes = run_nms(df=from_boxes, iou_threshold=AGGREGATED_IOU_THRESHOLD)
+    from_boxes = remove_overlapping_bbox(from_boxes)
+    from_boxes.reset_index(drop=True, inplace=True)
+    if len(from_boxes) == 0:
+      continue
+    if OUTPUT_DIFF_IMG_DIR is not None:
+      draw_bbox(src_image_path=from_image_path, output_image_path=OUTPUT_DIFF_IMG_DIR / (from_pkl_path.stem + '.from.tiff'), src_bbox_df=from_boxes)
+
+    to_pkl_path = DIFF_TO_BBOX_DIR / from_pkl_path.name
+    if to_pkl_path.exists():
+      to_image_path = DIFF_TO_IMG_DIR / (to_pkl_path.stem + '.tiff')
+      to_boxes = pd.read_pickle(to_pkl_path)
+      to_boxes = filter_bbox(to_boxes, DIFF_TO_INFERENCE_PARAM)
+      to_boxes = run_nms(df=to_boxes, iou_threshold=AGGREGATED_IOU_THRESHOLD)
+      to_boxes = remove_overlapping_bbox(to_boxes)
+      to_boxes.reset_index(drop=True, inplace=True)
+      if OUTPUT_DIFF_IMG_DIR is not None:
+        draw_bbox(src_image_path=to_image_path, output_image_path=OUTPUT_DIFF_IMG_DIR / (from_pkl_path.stem + '.to.tiff'), src_bbox_df=to_boxes)
+
+      from_boxes['__geometry'] = from_boxes.apply(
+          lambda x: shapely.geometry.box(x.xmin, x.ymin, x.xmax, x.ymax), axis=1)
+      from_boxes = gpd.GeoDataFrame(from_boxes, geometry='__geometry')
+      to_boxes['__geometry'] = to_boxes.apply(
+          lambda x: shapely.geometry.box(x.xmin, x.ymin, x.xmax, x.ymax), axis=1)
+      to_boxes = gpd.GeoDataFrame(to_boxes, geometry='__geometry')
+
+      from_index = rtree.index.Index(interleaved=True)
+      for idx, row in from_boxes.iterrows():
+        from_index.insert(idx, row['__geometry'].bounds)
+
+      matched_from_idxes = set()
+      for _, row in to_boxes.iterrows():
+        from_idxes = list(from_index.intersection(row['__geometry'].bounds))
+        for from_idx in from_idxes:
+          from_box = from_boxes.loc[from_idx]
+          iou = row['__geometry'].intersection(from_box['__geometry']).area
+          iou = iou / (row['__geometry'].area + from_box['__geometry'].area - iou)
+          if iou > DIFF_IOU_THRESHOLD:
+            matched_from_idxes.add(from_idx)
+
+      from_boxes = from_boxes[~from_boxes.index.isin(matched_from_idxes)]
+      del from_boxes['__geometry']
+
+    if len(from_boxes) > 0:
+      result_pkl_path = DIFF_RESULT_BBOX_DIR / from_pkl_path.name
+      from_boxes.to_pickle(result_pkl_path)
+      if OUTPUT_DIFF_IMG_DIR is not None:
+        draw_bbox(src_image_path=from_image_path,
+                  output_image_path=OUTPUT_DIFF_IMG_DIR / (from_pkl_path.stem + '.diff.tiff'),
+                  src_bbox_df=from_boxes)
 
 def infer_image(model, img_path, out_dir,
                 param_model_inference, prefer_model_params_config,
@@ -410,7 +581,7 @@ def infer_image(model, img_path, out_dir,
   # predict (inference with multiple scales/patches)
   predicted_boxes = []
   for model_inf in param_model_inference['patch']:
-    stored_config = model.config.copy()
+    stored_config = deepcopy(model.config)
     # update model's config before inference if necessary
     if prefer_model_params_config:
       # Note: we keep model.config['score_thresh'] with default low value to get as much as possible results
@@ -508,8 +679,8 @@ def infer_images(model_path, model_params_config, model_inference_config,
   IMAGE_LIST = DATASET_IMG_LIST if DATASET_IMG_LIST is not None else Path(DATASET_IMG_DIR).glob(dataset_img_pattern)
   for src in IMAGE_LIST:
     infer_image(model=model, img_path=src,
-                    out_dir=INFERENCE_RESULT_DIR, param_model_inference=MODEL_INFERENCE,
-                    prefer_model_params_config=prefer_model_params_config, continue_mode=CONTINUE_MODE)
+                out_dir=INFERENCE_RESULT_DIR, param_model_inference=MODEL_INFERENCE,
+                prefer_model_params_config=prefer_model_params_config, continue_mode=CONTINUE_MODE)
 
 def filter_bbox(df, model_inference_config):
   """
@@ -527,6 +698,9 @@ def filter_bbox(df, model_inference_config):
   DataFrame
     filtered bounding boxes
   """
+  if len(df) == 0:
+    return df
+
   # load bbox: filter after score_thresh, keep small trees only with very high scores
   filtered_df = []
   for model_inf in model_inference_config['patch']:
@@ -537,7 +711,7 @@ def filter_bbox(df, model_inference_config):
           ((df.xmax-df.xmin)*(df.ymax-df.ymin) >= model_inference_config['confident_min_bbox_size'])]
   return df
 
-def draw_bbox(src_image_path, output_image_path, src_bbox_path=None, src_bbox_df=None):
+def draw_bbox(src_image_path, output_image_path, src_bbox_path=None, src_bbox_df=None, thickness=1):
   """
   draw bounding boxes on images
 
@@ -561,7 +735,7 @@ def draw_bbox(src_image_path, output_image_path, src_bbox_path=None, src_bbox_df
   image = np.array(Image.open(src_image_path).convert("RGB")).astype("uint8")
   boxes = src_bbox_df if src_bbox_df is not None else pd.read_pickle(src_bbox_path)
   image = image[:,:,::-1] # RGB => BGR
-  image = visualize.plot_predictions(image, boxes)
+  image = visualize.plot_predictions(image, boxes, thickness=thickness)
   image = image[:,:,::-1] # BGR => RGB
 
   DATASET_IMG_META = {
@@ -679,9 +853,9 @@ def postprocess_render_images(model_inference_config,
   tasks = []
   for src_img_path in SRC_IMG_DIR.glob(dataset_img_pattern):
     delayed = dask.delayed(postprocess_render_image)(src_img_path=src_img_path, src_bbox_dir=SRC_BBOX_DIR,
-                                         output_img_dir=OUTPUT_IMG_RESULT_DIR,
-                                         model_inference_config=MODEL_INFERENCE,
-                                         continue_mode=CONTINUE_MODE)
+                                                    output_img_dir=OUTPUT_IMG_RESULT_DIR,
+                                                    model_inference_config=MODEL_INFERENCE,
+                                                    continue_mode=CONTINUE_MODE)
     tasks.append(delayed)
 
   with dask.config.set(pool=ThreadPoolExecutor(CONCURRENCY)):

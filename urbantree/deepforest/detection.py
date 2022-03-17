@@ -3,6 +3,7 @@ from pathlib import Path
 import time
 import math
 import json
+import json
 import shutil
 import inspect
 import warnings
@@ -17,6 +18,7 @@ from PIL import Image
 import torch
 import rasterio
 import rtree
+import pyproj
 import cv2
 import scipy.ndimage
 import skimage.morphology
@@ -28,7 +30,6 @@ from torchvision.ops import nms
 from deepforest import main, preprocess, predict, visualize
 
 from urbantree.setting import Setting
-
 
 def distance(points):
   """
@@ -319,7 +320,7 @@ def train_model(model_params_config,
   #  print("precision:", results['box_precision'])
   #  print("recall:", results['box_recall'])
 
-def remove_overlapping_bbox(df, iou_threshold=0.7):
+def remove_overlapping_bbox(df, iou_threshold=0.7, remove_nested=True, remove_partial_intersect=True):
   """
   remove overlapping bbox.
 
@@ -351,31 +352,38 @@ def remove_overlapping_bbox(df, iou_threshold=0.7):
     tests = tests[~tests['__id'].isin(nested_id)]
     tests = tests[~tests['__id'].isin(intersected_id)]
     bbox_geom = bbox['__geometry']
+
+    #test_index = rtree.index.Index(interleaved=True)
+    #for idx, row in tests.iterrows():
+    #    test_index.insert(idx, row['__geometry'].bounds)
+    #intersected = tests.loc[list(test_index.intersection(bbox_geom.bounds))]
     intersected = tests[tests['__geometry'].intersects(bbox_geom)]
-    f_intersected_nested = intersected['__geometry'].within(bbox_geom)
-    nested = intersected[f_intersected_nested]
-    intersected = intersected[~f_intersected_nested]
-    bbox_c = [(bbox_geom.bounds[2] + bbox_geom.bounds[0])/2, (bbox_geom.bounds[3] + bbox_geom.bounds[1])/2]
-    bbox_r = 0.5 * 0.5 * ((bbox_geom.bounds[2] - bbox_geom.bounds[0]) + (bbox_geom.bounds[3] - bbox_geom.bounds[1]))
 
-    candidate = set(list(nested['__id']))
-    for n in list(nested['__id']):
-      p = tests[tests['__id']==n]['__geometry'].squeeze()
-      p_c = [(p.bounds[2] + p.bounds[0])/2, (p.bounds[3] + p.bounds[1])/2]
-      #p_r = 0.5 * 0.5 * ((p.bounds[2] - p.bounds[0]) + (p.bounds[3] - p.bounds[1]))
-      dist = math.sqrt(math.pow(p_c[0] - bbox_c[0], 2) + math.pow(p_c[1] - bbox_c[1], 2))
-      if dist > bbox_r:
-        candidate.remove(n)
-    nested_id.update(candidate)
+    if remove_nested:
+      f_intersected_nested = intersected['__geometry'].within(bbox_geom)
+      nested = intersected[f_intersected_nested]
+      intersected = intersected[~f_intersected_nested]
+      bbox_c = [(bbox_geom.bounds[2] + bbox_geom.bounds[0])/2, (bbox_geom.bounds[3] + bbox_geom.bounds[1])/2]
+      bbox_r = 0.5 * 0.5 * ((bbox_geom.bounds[2] - bbox_geom.bounds[0]) + (bbox_geom.bounds[3] - bbox_geom.bounds[1]))
+      candidate = set(list(nested['__id']))
+      for n in list(nested['__id']):
+        p = tests[tests['__id']==n]['__geometry'].squeeze()
+        p_c = [(p.bounds[2] + p.bounds[0])/2, (p.bounds[3] + p.bounds[1])/2]
+        #p_r = 0.5 * 0.5 * ((p.bounds[2] - p.bounds[0]) + (p.bounds[3] - p.bounds[1]))
+        dist = math.sqrt(math.pow(p_c[0] - bbox_c[0], 2) + math.pow(p_c[1] - bbox_c[1], 2))
+        if dist > bbox_r:
+          candidate.remove(n)
+      nested_id.update(candidate)
 
-    candidate = set(list(intersected['__id']))
-    for n in list(intersected['__id']):
-        p = tests[tests['__id']==n]['__geometry']
-        iou = p.intersection(bbox_geom).area
-        iou = iou / (bbox_geom.area + p.area - iou)
-        if iou.squeeze() < iou_threshold:
-            candidate.remove(n)
-    intersected_id.update(candidate)
+    if remove_partial_intersect:
+      candidate = set(list(intersected['__id']))
+      for n in list(intersected['__id']):
+          p = tests[tests['__id']==n]['__geometry']
+          iou = p.intersection(bbox_geom).area
+          iou = iou / (bbox_geom.area + p.area - iou)
+          if iou.squeeze() < iou_threshold:
+              candidate.remove(n)
+      intersected_id.update(candidate)
 
   df = df[~df['__id'].isin(nested_id)]
   df = df[~df['__id'].isin(intersected_id)]
@@ -531,9 +539,10 @@ def calc_diff(diff_from_setting_path,
         from_idxes = list(from_index.intersection(row['__geometry'].bounds))
         for from_idx in from_idxes:
           from_box = from_boxes.loc[from_idx]
-          iou = row['__geometry'].intersection(from_box['__geometry']).area
-          iou = iou / (row['__geometry'].area + from_box['__geometry'].area - iou)
-          if iou > DIFF_IOU_THRESHOLD:
+          inters = row['__geometry'].intersection(from_box['__geometry']).area
+          iou = inters / (row['__geometry'].area + from_box['__geometry'].area - inters)
+          covered = inters / min(row['__geometry'].area, from_box['__geometry'].area)
+          if iou > DIFF_IOU_THRESHOLD or covered > 0.80:
             matched_from_idxes.add(from_idx)
 
       from_boxes = from_boxes[~from_boxes.index.isin(matched_from_idxes)]
@@ -860,3 +869,69 @@ def postprocess_render_images(model_inference_config,
 
   with dask.config.set(pool=ThreadPoolExecutor(CONCURRENCY)):
     dask.compute(*tasks)
+
+def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_threshold=0.2, output_bbox_path=None):
+  SRC_IMG_DIR = Path(src_img_dir)
+  BBOX_DIR    = Path(src_bbox_dif)
+  OUTPUT_BBOX_PATH = output_bbox_path
+  OUTPUT_GEOJSON_PATH = output_geojson_path
+
+  # collect all bbox and convert bbox from local coordinates to geo coordinates
+  all_df = []
+  # collect all bbox
+  for pkl_path in BBOX_DIR.glob('*.pkl'):
+    # geo reference
+    img_path = SRC_IMG_DIR / (pkl_path.stem + '.tiff')
+    with rasterio.open(img_path) as src:
+      image_crs = src.crs
+      image_transform = src.transform
+      img_proj = pyproj.Transformer.from_crs(image_crs, 4326, always_xy=True)
+
+    def convertCoordsLocal(r):
+      xmin, ymin = image_transform * [r.xmin, r.ymin]
+      xmax, ymax = image_transform * [r.xmax, r.ymax]
+      return pd.Series({'xmin': xmin, 'ymin': ymin, 'xmax': xmax, 'ymax': ymax})
+
+    def convertLocalTo4326(r):
+      xmin, ymin = img_proj.transform(r.xmin, r.ymin)
+      xmax, ymax = img_proj.transform(r.xmax, r.ymax)
+      return pd.Series({'xmin_epsg4326': xmin, 'ymin_epsg4326': ymin,
+                        'xmax_epsg4326': xmax, 'ymax_epsg4326': ymax})
+
+    df = pd.read_pickle(pkl_path)
+    df.update(df.apply(convertCoordsLocal, axis=1))
+    df = pd.concat([df, df.apply(convertLocalTo4326, axis=1)], axis=1)
+    all_df.append(df)
+
+  df = pd.concat(all_df, ignore_index=True)
+  if OUTPUT_BBOX_PATH is not None:
+    df.to_pickle(OUTPUT_BBOX_PATH)
+
+  print(df.head())
+
+  # or NMS?
+  print("rows before overlapping removal:", df.shape[0])
+  df = remove_overlapping_bbox(df=df, iou_threshold=iou_threshold)
+  print("rows after overlapping removal:", df.shape[0])
+
+  geoj = {
+    "type": "FeatureCollection",
+    "features": []
+  }
+
+  for _, r in df.iterrows():
+    tl = [r.xmin_epsg4326, r.ymin_epsg4326]
+    bl = [r.xmin_epsg4326, r.ymax_epsg4326]
+    br = [r.xmax_epsg4326, r.ymax_epsg4326]
+    tr = [r.xmax_epsg4326, r.ymin_epsg4326]
+    feature = {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[list(tl) , list(tr), list(br), list(bl), list(tl)]]
+      }
+    }
+    geoj['features'].append(feature)
+
+  with open(OUTPUT_GEOJSON_PATH, 'w') as outfile:
+    json.dump(geoj, outfile)

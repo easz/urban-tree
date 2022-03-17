@@ -57,24 +57,24 @@ model_params_config:
     val_accuracy_interval: 1
 
 model_inference_config:
-  confident_min_bbox_size: 20
-  confident_min_score: 0.3
+  confident_min_bbox_size: 25
+  confident_min_score: 0.6
   morphology_factor: 1
   concurrency: 4
   patch:
     - patch_size: 1200
       patch_overlap: 0.3
       iou_threshold: 0.8
-      score_thresh: 0.3
+      score_thresh: 0.6
     - patch_size: 800
       patch_overlap: 0.3
       iou_threshold: 0.8
-      score_thresh: 0.2
+      score_thresh: 0.4
     - patch_size: 200
       patch_overlap: 0.2
       iou_threshold: 0.7
-      score_thresh: 0.1
+      score_thresh: 0.3
     - patch_size: 96
       patch_overlap: 0.18
       iou_threshold: 0.6
-      score_thresh: 0.1
+      score_thresh: 0.3

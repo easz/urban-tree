@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 import dask
 from copy import deepcopy
 
+from tqdm import tqdm
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -320,9 +321,9 @@ def train_model(model_params_config,
   #  print("precision:", results['box_precision'])
   #  print("recall:", results['box_recall'])
 
-def remove_overlapping_bbox(df, iou_threshold=0.7, remove_nested=True, remove_partial_intersect=True):
+def remove_nested_bbox(df):
   """
-  remove overlapping bbox.
+  remove nested bbox.
 
   Parameters
   ----------
@@ -339,54 +340,28 @@ def remove_overlapping_bbox(df, iou_threshold=0.7, remove_nested=True, remove_pa
   ddf['__area'] = ddf.__geometry.area
   ddf.sort_values('__area', ascending=False, inplace=True)
 
+  # find nested bbox
   nested_id = set()
-  intersected_id = set()
-
   for iloc in range(ddf.shape[0]):
     if ddf.iloc[iloc]['__id'] in nested_id:
-      continue
-    if ddf.iloc[iloc]['__id'] in intersected_id:
       continue
     bbox  = ddf.iloc[iloc]
     tests = ddf.iloc[iloc+1:]
     tests = tests[~tests['__id'].isin(nested_id)]
-    tests = tests[~tests['__id'].isin(intersected_id)]
     bbox_geom = bbox['__geometry']
-
-    #test_index = rtree.index.Index(interleaved=True)
-    #for idx, row in tests.iterrows():
-    #    test_index.insert(idx, row['__geometry'].bounds)
-    #intersected = tests.loc[list(test_index.intersection(bbox_geom.bounds))]
-    intersected = tests[tests['__geometry'].intersects(bbox_geom)]
-
-    if remove_nested:
-      f_intersected_nested = intersected['__geometry'].within(bbox_geom)
-      nested = intersected[f_intersected_nested]
-      intersected = intersected[~f_intersected_nested]
-      bbox_c = [(bbox_geom.bounds[2] + bbox_geom.bounds[0])/2, (bbox_geom.bounds[3] + bbox_geom.bounds[1])/2]
-      bbox_r = 0.5 * 0.5 * ((bbox_geom.bounds[2] - bbox_geom.bounds[0]) + (bbox_geom.bounds[3] - bbox_geom.bounds[1]))
-      candidate = set(list(nested['__id']))
-      for n in list(nested['__id']):
-        p = tests[tests['__id']==n]['__geometry'].squeeze()
-        p_c = [(p.bounds[2] + p.bounds[0])/2, (p.bounds[3] + p.bounds[1])/2]
-        #p_r = 0.5 * 0.5 * ((p.bounds[2] - p.bounds[0]) + (p.bounds[3] - p.bounds[1]))
-        dist = math.sqrt(math.pow(p_c[0] - bbox_c[0], 2) + math.pow(p_c[1] - bbox_c[1], 2))
-        if dist > bbox_r:
-          candidate.remove(n)
-      nested_id.update(candidate)
-
-    if remove_partial_intersect:
-      candidate = set(list(intersected['__id']))
-      for n in list(intersected['__id']):
-          p = tests[tests['__id']==n]['__geometry']
-          iou = p.intersection(bbox_geom).area
-          iou = iou / (bbox_geom.area + p.area - iou)
-          if iou.squeeze() < iou_threshold:
-              candidate.remove(n)
-      intersected_id.update(candidate)
+    nested = tests[tests['__geometry'].within(bbox_geom)]
+    bbox_c = [(bbox_geom.bounds[2] + bbox_geom.bounds[0])/2, (bbox_geom.bounds[3] + bbox_geom.bounds[1])/2]
+    bbox_r = 0.5 * 0.5 * ((bbox_geom.bounds[2] - bbox_geom.bounds[0]) + (bbox_geom.bounds[3] - bbox_geom.bounds[1]))
+    # candidate of nested bbox
+    candidate = set(list(nested['__id']))
+    p_c_x = (nested.xmin + nested.xmax) / 2
+    p_c_y = (nested.ymin + nested.ymax) / 2
+    dist = ((p_c_x - bbox_c[0])**2 + (p_c_y - bbox_c[1])**2)**0.5
+    # exclude bbox with large distance
+    candidate.difference_update(list(nested[dist > bbox_r]['__id']))
+    nested_id.update(candidate)
 
   df = df[~df['__id'].isin(nested_id)]
-  df = df[~df['__id'].isin(intersected_id)]
   del df['__id']
   del df['__geometry']
   del df['__area']
@@ -414,8 +389,8 @@ def run_nms(df, use_soft_nms=False, iou_threshold=0.15,
   if len(df) == 0:
       return df
 
-  boxes = torch.tensor(df[["xmin", "ymin", "xmax", "ymax"]].values, dtype=torch.float32)
-  scores = torch.tensor(df.score.values, dtype=torch.float32)
+  boxes = torch.tensor(df[["xmin", "ymin", "xmax", "ymax"]].values.astype('float32'), dtype=torch.float32)
+  scores = torch.tensor(df.score.values.astype('float32'), dtype=torch.float32)
 
   if use_soft_nms:
     bbox_left_idx = predict.soft_nms(boxes=boxes,
@@ -463,9 +438,6 @@ def calc_diff(diff_from_setting_path,
   diff_from_setting = Setting.load_deepforest_setting(diff_from_setting_path)
   diff_to_setting   = Setting.load_deepforest_setting(diff_to_setting_path)
 
-  DIFF_FROM_INFERENCE_PARAM_OVERRIDE = diff_from_inference_param
-  DIFF_TO_INFERENCE_PARAM_OVERRIDE   = diff_to_inference_param
-
   AGGREGATED_IOU_THRESHOLD = aggregate_iou_threshold
   DIFF_IOU_THRESHOLD       = diff_iou_threshold
   DIFF_COVER_THRESHOLD     = diff_cover_threshold
@@ -474,19 +446,14 @@ def calc_diff(diff_from_setting_path,
   DIFF_FROM_BBOX_DIR   = Path(diff_from_setting['dataset_inference_dir']) / 'b'
   DIFF_TO_BBOX_DIR     = Path(diff_to_setting['dataset_inference_dir'])   / 'b'
 
-  DIFF_FROM_INFERENCE_PARAM = diff_from_setting['model_inference_config']
-  DIFF_TO_INFERENCE_PARAM   = diff_to_setting['model_inference_config']
+  DIFF_FROM_INFERENCE_PARAM = diff_from_inference_param or diff_from_setting['model_inference_config']
+  DIFF_TO_INFERENCE_PARAM   = diff_to_inference_param   or diff_to_setting['model_inference_config']
 
   DIFF_FROM_IMG_DIR    = Path(diff_from_setting['dataset_img_dir'])
   DIFF_TO_IMG_DIR      = Path(diff_to_setting['dataset_img_dir'])
   OUTPUT_DEBUG_IMG_DIR = Path(output_debug_img_dir) if output_debug_img_dir is not None else None
 
   CONCURRENCY = concurrency
-
-  if DIFF_FROM_INFERENCE_PARAM_OVERRIDE is not None:
-    DIFF_FROM_INFERENCE_PARAM = DIFF_FROM_INFERENCE_PARAM_OVERRIDE
-  if DIFF_TO_INFERENCE_PARAM_OVERRIDE is not None:
-    DIFF_TO_INFERENCE_PARAM = DIFF_TO_INFERENCE_PARAM_OVERRIDE
 
   print("DIFF_FROM_INFERENCE_PARAM", DIFF_FROM_INFERENCE_PARAM)
   print("DIFF_TO_INFERENCE_PARAM", DIFF_TO_INFERENCE_PARAM)
@@ -504,7 +471,7 @@ def calc_diff(diff_from_setting_path,
     from_boxes.reset_index(drop=True, inplace=True)
     from_boxes = filter_bbox(from_boxes, DIFF_FROM_INFERENCE_PARAM)
     from_boxes = run_nms(df=from_boxes, iou_threshold=AGGREGATED_IOU_THRESHOLD)
-    #from_boxes = remove_overlapping_bbox(from_boxes, iou_threshold=AGGREGATED_IOU_THRESHOLD)
+    from_boxes = remove_nested_bbox(from_boxes)
     if len(from_boxes) == 0:
       return
     if OUTPUT_DEBUG_IMG_DIR is not None:
@@ -519,7 +486,7 @@ def calc_diff(diff_from_setting_path,
       to_boxes.reset_index(drop=True, inplace=True)
       to_boxes = filter_bbox(to_boxes, DIFF_TO_INFERENCE_PARAM)
       to_boxes = run_nms(df=to_boxes, iou_threshold=AGGREGATED_IOU_THRESHOLD)
-      #to_boxes = remove_overlapping_bbox(to_boxes, iou_threshold=AGGREGATED_IOU_THRESHOLD)
+      to_boxes = remove_nested_bbox(to_boxes)
       if OUTPUT_DEBUG_IMG_DIR is not None:
         draw_bbox(src_image_path=to_image_path, output_image_path=OUTPUT_DEBUG_IMG_DIR / (from_pkl_path.stem + '.to.tiff'), src_bbox_df=to_boxes)
       result_pkl_path = DIFF_RESULT_BBOX_DIR / 'to' / from_pkl_path.name
@@ -882,7 +849,7 @@ def postprocess_render_images(model_inference_config,
   with dask.config.set(pool=ThreadPoolExecutor(CONCURRENCY)):
     dask.compute(*tasks)
 
-def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_threshold=0.2, output_bbox_path=None):
+def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_threshold=0.2, size_threshold=0, output_bbox_path=None):
   SRC_IMG_DIR = Path(src_img_dir)
   BBOX_DIR    = Path(src_bbox_dif)
   OUTPUT_BBOX_PATH = output_bbox_path
@@ -891,7 +858,7 @@ def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_thre
   # collect all bbox and convert bbox from local coordinates to geo coordinates
   all_df = []
   # collect all bbox
-  for pkl_path in BBOX_DIR.glob('*.pkl'):
+  for pkl_path in tqdm(list(BBOX_DIR.glob('*.pkl'))):
     # geo reference
     img_path = SRC_IMG_DIR / (pkl_path.stem + '.tiff')
     with rasterio.open(img_path) as src:
@@ -900,8 +867,8 @@ def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_thre
       img_proj = pyproj.Transformer.from_crs(image_crs, 4326, always_xy=True)
 
     def convertCoordsLocal(r):
-      xmin, ymin = image_transform * [r.xmin, r.ymin]
-      xmax, ymax = image_transform * [r.xmax, r.ymax]
+      xmin, ymax = image_transform * [r.xmin, r.ymin]
+      xmax, ymin = image_transform * [r.xmax, r.ymax]
       return pd.Series({'xmin': xmin, 'ymin': ymin, 'xmax': xmax, 'ymax': ymax})
 
     def convertLocalTo4326(r):
@@ -911,20 +878,22 @@ def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_thre
                         'xmax_epsg4326': xmax, 'ymax_epsg4326': ymax})
 
     df = pd.read_pickle(pkl_path)
+    df = df[(df.xmax-df.xmin)*(df.ymax-df.ymin) >= size_threshold]
     df.update(df.apply(convertCoordsLocal, axis=1))
     df = pd.concat([df, df.apply(convertLocalTo4326, axis=1)], axis=1)
-    all_df.append(df)
+
+    if len(df) > 0:
+      all_df.append(df)
 
   df = pd.concat(all_df, ignore_index=True)
   if OUTPUT_BBOX_PATH is not None:
     df.to_pickle(OUTPUT_BBOX_PATH)
 
-  print(df.head())
-
   # or NMS?
-  print("rows before overlapping removal:", df.shape[0])
-  df = remove_overlapping_bbox(df=df, iou_threshold=iou_threshold)
-  print("rows after overlapping removal:", df.shape[0])
+  print("rows before NMS:", df.shape[0])
+  df = run_nms(df, iou_threshold=iou_threshold)
+  #df = remove_overlapping_bbox(df=df, iou_threshold=iou_threshold)
+  print("rows after NMS:", df.shape[0])
 
   geoj = {
     "type": "FeatureCollection",

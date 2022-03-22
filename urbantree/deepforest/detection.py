@@ -11,6 +11,7 @@ import logging
 import functools
 from concurrent.futures import ThreadPoolExecutor
 import dask
+from dask.diagnostics import ProgressBar
 from copy import deepcopy
 
 from tqdm import tqdm
@@ -494,6 +495,8 @@ def calc_diff(diff_from_setting_path,
       for idx, row in from_boxes.iterrows():
         from_index.insert(idx, row['__geometry'].bounds)
 
+      # TODO: improve performance
+
       matched_from_idxes = set()
       for _, to_box in to_boxes.iterrows():
         from_idxes = list(from_index.intersection(to_box['__geometry'].bounds))
@@ -522,7 +525,8 @@ def calc_diff(diff_from_setting_path,
     tasks.append(delayed)
 
   with dask.config.set(pool=ThreadPoolExecutor(CONCURRENCY)):
-    dask.compute(*tasks)
+    with ProgressBar():
+      dask.compute(*tasks)
 
 
 def infer_image(model, img_path, out_dir,
@@ -880,11 +884,14 @@ def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_thre
   if OUTPUT_BBOX_PATH is not None:
     df.to_pickle(OUTPUT_BBOX_PATH)
 
-  # or NMS?
+  # TODO: improve performance. Run NMS on small tiles and overlapping parts
+
   print("rows before NMS:", df.shape[0])
   df = run_nms(df, iou_threshold=iou_threshold)
   #df = remove_overlapping_bbox(df=df, iou_threshold=iou_threshold)
   print("rows after NMS:", df.shape[0])
+
+  # TODO: use geopandas to generate geojson
 
   geoj = {
     "type": "FeatureCollection",

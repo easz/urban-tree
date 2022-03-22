@@ -849,10 +849,10 @@ def postprocess_render_images(model_inference_config,
   with dask.config.set(pool=ThreadPoolExecutor(CONCURRENCY)):
     dask.compute(*tasks)
 
-def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_threshold=0.2, size_threshold=0, output_bbox_path=None):
+def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_threshold=0.2, size_threshold=0, output_pkl_path=None):
   SRC_IMG_DIR = Path(src_img_dir)
   BBOX_DIR    = Path(src_bbox_dif)
-  OUTPUT_BBOX_PATH = output_bbox_path
+  OUTPUT_BBOX_PATH = output_pkl_path
   OUTPUT_GEOJSON_PATH = output_geojson_path
 
   # collect all bbox and convert bbox from local coordinates to geo coordinates

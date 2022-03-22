@@ -62,14 +62,14 @@ You may find any trained model in the [releases](https://github.com/easz/urban-t
 Use `wms-tile-get` to download map tiles from WMS and store in [Slippy Map structure](https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames) (i.e. XYZ format). *Alternatively arbitrary extents of map images can also be directly requested from WMS server. However, XYZ format is preferable for offline data storage.*
 
 ~~~
- $ wms-tile-get -s wms.opendata_luftbild_dop60.json \
+ $ wms-tile-get -s contrib/wms.munich_2017.json \
                 -g munich.boundary.geojson \
                 -z 18 \
                 -o aerial_images/opendata_luftbild_dop60
 ~~~
 
 ~~~
- $ wms-tile-get -s wms.by_dop80c.json \
+ $ wms-tile-get -s contrib/wms.munich_2020.json \
                -g munich.boundary.geojson \
                -z 18 \
                -o aerial_images/by_dop80c

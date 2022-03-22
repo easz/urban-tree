@@ -35373,41 +35373,6 @@
         ]
       },
       "id": "relation/2313918"
-    },
-    {
-      "type": "Feature",
-      "properties": {
-        "@id": "node/54129104",
-        "@relations": [
-          {
-            "role": "label",
-            "rel": 56388,
-            "reltags": {
-              "TMC:cid_58:tabcd_1:Class": "Area",
-              "TMC:cid_58:tabcd_1:LCLversion": "8.00",
-              "TMC:cid_58:tabcd_1:LocationCode": "5480",
-              "admin_level": "9",
-              "boundary": "administrative",
-              "name": "Maxvorstadt",
-              "name:prefix": "Stadtbezirk",
-              "note": "München, Stadtbezirk 3, 10 Bezirksteile",
-              "official_name": "Stadtbezirk 3 Maxvorstadt",
-              "ref": "3",
-              "type": "boundary",
-              "wikidata": "Q256012",
-              "wikipedia": "de:Maxvorstadt"
-            }
-          }
-        ]
-      },
-      "geometry": {
-        "type": "Point",
-        "coordinates": [
-          11.5624179,
-          48.1510916
-        ]
-      },
-      "id": "node/54129104"
     }
   ]
 }

@@ -8,6 +8,7 @@ import shutil
 import inspect
 import warnings
 import logging
+import functools
 from concurrent.futures import ThreadPoolExecutor
 import dask
 from copy import deepcopy
@@ -325,48 +326,38 @@ def remove_nested_bbox(df):
   """
   remove nested bbox.
 
+  Credit: https://stackoverflow.com/a/71561880/104897
+
   Parameters
   ----------
   df : DataFrame
     inference result with bounding boxes, labels and scores
   """
-  if len(df) == 0:
-    return df
-
-  df['__id'] = range(0, df.shape[0]) # make an extra unique 'id'
-  df['__geometry'] = df.apply(
-      lambda x: shapely.geometry.box(x.xmin, x.ymin, x.xmax, x.ymax), axis=1)
-  ddf = gpd.GeoDataFrame(df, geometry='__geometry')
-  ddf['__area'] = ddf.__geometry.area
-  ddf.sort_values('__area', ascending=False, inplace=True)
-
-  # find nested bbox
-  nested_id = set()
-  for iloc in range(ddf.shape[0]):
-    if ddf.iloc[iloc]['__id'] in nested_id:
-      continue
-    bbox  = ddf.iloc[iloc]
-    tests = ddf.iloc[iloc+1:]
-    tests = tests[~tests['__id'].isin(nested_id)]
-    bbox_geom = bbox['__geometry']
-    nested = tests[tests['__geometry'].within(bbox_geom)]
-    bbox_c = [(bbox_geom.bounds[2] + bbox_geom.bounds[0])/2, (bbox_geom.bounds[3] + bbox_geom.bounds[1])/2]
-    bbox_r = 0.5 * 0.5 * ((bbox_geom.bounds[2] - bbox_geom.bounds[0]) + (bbox_geom.bounds[3] - bbox_geom.bounds[1]))
-    # candidate of nested bbox
-    candidate = set(list(nested['__id']))
-    p_c_x = (nested.xmin + nested.xmax) / 2
-    p_c_y = (nested.ymin + nested.ymax) / 2
-    dist = ((p_c_x - bbox_c[0])**2 + (p_c_y - bbox_c[1])**2)**0.5
-    # exclude bbox with large distance
-    candidate.difference_update(list(nested[dist > bbox_r]['__id']))
-    nested_id.update(candidate)
-
-  df = df[~df['__id'].isin(nested_id)]
-  del df['__id']
-  del df['__geometry']
-  del df['__area']
-
-  return df
+  def within(df):
+    if len(df) == 0:
+      return df
+    # within
+    d = {}
+    for c in ['xmin', 'ymin', 'xmax', 'ymax']:
+      a = np.tile(df[c].values.T ,(len(df),1))
+      d[c] = a.T >= a if c[1:] == "min" else a.T <= a
+    aa = functools.reduce(np.logical_and, (aa for aa in d.values()))
+    # distance
+    df['__x'] = (df['xmax']+df['xmin'])*0.5
+    df['__y'] = (df['ymax']+df['ymin'])*0.5
+    df['__r'] = (df['xmax']-df['xmin']+df['ymax']-df['ymin'])/4.0
+    x = np.tile(df.__x.values.T ,(len(df),1))
+    y = np.tile(df.__y.values.T ,(len(df),1))
+    r = np.tile(df.__r.values.T ,(len(df),1))
+    del df['__x']
+    del df['__y']
+    del df['__r']
+    r_pow2 = r**2
+    dist_pow2 = (x.T-x)**2 + (y.T-y)**2
+    bb = dist_pow2 < r_pow2
+    aa = aa & bb
+    return aa.sum(axis=1)>1
+  return df.loc[~within(df)]
 
 def run_nms(df, use_soft_nms=False, iou_threshold=0.15,
             sigma=0.5, score_threshold=0.001):

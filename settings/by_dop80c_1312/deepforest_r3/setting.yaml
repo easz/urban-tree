@@ -60,7 +60,6 @@ model_inference_config:
   confident_min_bbox_size: 36
   confident_min_score: 0.6
   morphology_factor: 1
-  concurrency: 4
   patch:
     - patch_size: 1200
       patch_overlap: 0.3
@@ -73,8 +72,8 @@ model_inference_config:
     - patch_size: 200
       patch_overlap: 0.2
       iou_threshold: 0.7
-      score_thresh: 0.3
+      score_thresh: 0.15
     - patch_size: 96
       patch_overlap: 0.18
       iou_threshold: 0.6
-      score_thresh: 0.3
+      score_thresh: 0.15

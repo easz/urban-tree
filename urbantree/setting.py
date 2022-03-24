@@ -95,7 +95,6 @@ class Setting(object):
         'confident_min_bbox_size': 0,
         'confident_min_score': 0.9,
         'morphology_factor': 0,
-        'concurrency': 1,
         'patch': []
       }
     }

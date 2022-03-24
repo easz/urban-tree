@@ -344,15 +344,12 @@ def remove_nested_bbox(df):
       d[c] = a.T >= a if c[1:] == "min" else a.T <= a
     aa = functools.reduce(np.logical_and, (aa for aa in d.values()))
     # distance
-    df['__x'] = (df['xmax']+df['xmin'])*0.5
-    df['__y'] = (df['ymax']+df['ymin'])*0.5
-    df['__r'] = (df['xmax']-df['xmin']+df['ymax']-df['ymin'])/4.0
-    x = np.tile(df.__x.values.T ,(len(df),1))
-    y = np.tile(df.__y.values.T ,(len(df),1))
-    r = np.tile(df.__r.values.T ,(len(df),1))
-    del df['__x']
-    del df['__y']
-    del df['__r']
+    __x = (df['xmax']+df['xmin'])*0.5
+    __y = (df['ymax']+df['ymin'])*0.5
+    __r = (df['xmax']-df['xmin']+df['ymax']-df['ymin'])/4.0
+    x = np.tile(__x.values.T ,(len(df),1))
+    y = np.tile(__y.values.T ,(len(df),1))
+    r = np.tile(__r.values.T ,(len(df),1))
     r_pow2 = r**2
     dist_pow2 = (x.T-x)**2 + (y.T-y)**2
     bb = dist_pow2 < r_pow2
@@ -799,6 +796,7 @@ def postprocess_render_image(src_img_path, src_bbox_dir,
 def postprocess_render_images(model_inference_config,
                               dataset_img_dir, dataset_inference_dir,
                               dataset_img_pattern="*.tiff",
+                              concurrency=6,
                               continue_mode=True, **ignored):
   """
   Render tree canopy as raster images from detected bboxes.
@@ -825,7 +823,7 @@ def postprocess_render_images(model_inference_config,
   OUTPUT_IMG_RESULT_DIR = Path(dataset_inference_dir).joinpath('r')
   MODEL_INFERENCE       = model_inference_config
 
-  CONCURRENCY = MODEL_INFERENCE['concurrency']
+  CONCURRENCY = concurrency
 
   os.makedirs(OUTPUT_IMG_RESULT_DIR, exist_ok=True)
 
@@ -842,11 +840,12 @@ def postprocess_render_images(model_inference_config,
     tasks.append(delayed)
 
   with dask.config.set(pool=ThreadPoolExecutor(CONCURRENCY)):
-    dask.compute(*tasks)
+    with ProgressBar():
+      dask.compute(*tasks)
 
-def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_threshold=0.2, size_threshold=0, output_pkl_path=None):
+def create_bbox_geojson(src_img_dir, src_bbox_diff, output_geojson_path, iou_threshold=0.2, size_threshold=0, output_pkl_path=None):
   SRC_IMG_DIR = Path(src_img_dir)
-  BBOX_DIR    = Path(src_bbox_dif)
+  BBOX_DIR    = Path(src_bbox_diff)
   OUTPUT_BBOX_PATH = output_pkl_path
   OUTPUT_GEOJSON_PATH = output_geojson_path
 
@@ -881,8 +880,6 @@ def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_thre
       all_df.append(df)
 
   df = pd.concat(all_df, ignore_index=True)
-  if OUTPUT_BBOX_PATH is not None:
-    df.to_pickle(OUTPUT_BBOX_PATH)
 
   # TODO: improve performance. Run NMS on small tiles and overlapping parts
 
@@ -890,6 +887,9 @@ def create_bbox_geojson(src_img_dir, src_bbox_dif, output_geojson_path, iou_thre
   df = run_nms(df, iou_threshold=iou_threshold)
   #df = remove_overlapping_bbox(df=df, iou_threshold=iou_threshold)
   print("rows after NMS:", df.shape[0])
+
+  if OUTPUT_BBOX_PATH is not None:
+    df.to_pickle(OUTPUT_BBOX_PATH)
 
   # TODO: use geopandas to generate geojson
 

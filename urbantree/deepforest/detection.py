@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import random
 import time
 import math
 import json
@@ -334,9 +335,10 @@ def remove_nested_bbox(df):
   df : DataFrame
     inference result with bounding boxes, labels and scores
   """
+  if len(df) == 0:
+    return df
+
   def within(df):
-    if len(df) == 0:
-      return df
     # within
     d = {}
     for c in ['xmin', 'ymin', 'xmax', 'ymax']:
@@ -346,7 +348,7 @@ def remove_nested_bbox(df):
     # distance
     __x = (df['xmax']+df['xmin'])*0.5
     __y = (df['ymax']+df['ymin'])*0.5
-    __r = (df['xmax']-df['xmin']+df['ymax']-df['ymin'])/4.0
+    __r = (df['xmax']-df['xmin']+df['ymax']-df['ymin'])/4.2
     x = np.tile(__x.values.T ,(len(df),1))
     y = np.tile(__y.values.T ,(len(df),1))
     r = np.tile(__r.values.T ,(len(df),1))
@@ -444,9 +446,6 @@ def calc_diff(diff_from_setting_path,
 
   CONCURRENCY = concurrency
 
-  print("DIFF_FROM_INFERENCE_PARAM", DIFF_FROM_INFERENCE_PARAM)
-  print("DIFF_TO_INFERENCE_PARAM", DIFF_TO_INFERENCE_PARAM)
-
   if DIFF_RESULT_BBOX_DIR.exists() and os.listdir(DIFF_RESULT_BBOX_DIR):
     raise RuntimeError("Directory is not empty: " + str(DIFF_RESULT_BBOX_DIR))
   DIFF_RESULT_BBOX_DIR.mkdir(parents=True, exist_ok=True)
@@ -455,6 +454,8 @@ def calc_diff(diff_from_setting_path,
   DIFF_RESULT_BBOX_DIR.joinpath('diff').mkdir(parents=True, exist_ok=True)
 
   def _run(from_pkl_path):
+    color = (random.randint(50,200), random.randint(50,200), random.randint(50,200))
+
     from_image_path = DIFF_FROM_IMG_DIR / (from_pkl_path.stem + '.tiff')
     from_boxes = pd.read_pickle(from_pkl_path)
     from_boxes.reset_index(drop=True, inplace=True)
@@ -464,7 +465,9 @@ def calc_diff(diff_from_setting_path,
     if len(from_boxes) == 0:
       return
     if OUTPUT_DEBUG_IMG_DIR is not None:
-      draw_bbox(src_image_path=from_image_path, output_image_path=OUTPUT_DEBUG_IMG_DIR / (from_pkl_path.stem + '.from.tiff'), src_bbox_df=from_boxes)
+      draw_bbox(src_image_path=from_image_path,
+                output_image_path=OUTPUT_DEBUG_IMG_DIR / 'from' / (from_pkl_path.stem + '.from.tiff'),
+                src_bbox_df=from_boxes, color=color)
     result_pkl_path = DIFF_RESULT_BBOX_DIR / 'from' / from_pkl_path.name
     from_boxes.to_pickle(result_pkl_path)
 
@@ -477,44 +480,46 @@ def calc_diff(diff_from_setting_path,
       to_boxes = run_nms(df=to_boxes, iou_threshold=AGGREGATED_IOU_THRESHOLD)
       to_boxes = remove_nested_bbox(to_boxes)
       if OUTPUT_DEBUG_IMG_DIR is not None:
-        draw_bbox(src_image_path=to_image_path, output_image_path=OUTPUT_DEBUG_IMG_DIR / (from_pkl_path.stem + '.to.tiff'), src_bbox_df=to_boxes)
+        draw_bbox(src_image_path=to_image_path,
+                  output_image_path=OUTPUT_DEBUG_IMG_DIR / 'to' / (from_pkl_path.stem + '.to.tiff'),
+                  src_bbox_df=to_boxes, color=color)
       result_pkl_path = DIFF_RESULT_BBOX_DIR / 'to' / from_pkl_path.name
       to_boxes.to_pickle(result_pkl_path)
 
-      from_boxes['__geometry'] = from_boxes.apply(
-          lambda x: shapely.geometry.box(x.xmin, x.ymin, x.xmax, x.ymax), axis=1)
-      from_boxes = gpd.GeoDataFrame(from_boxes, geometry='__geometry')
-      to_boxes['__geometry'] = to_boxes.apply(
-          lambda x: shapely.geometry.box(x.xmin, x.ymin, x.xmax, x.ymax), axis=1)
-      to_boxes = gpd.GeoDataFrame(to_boxes, geometry='__geometry')
+      if len(to_boxes) > 0:
+        from_boxes['__geometry'] = from_boxes.apply(
+            lambda x: shapely.geometry.box(x.xmin, x.ymin, x.xmax, x.ymax), axis=1)
+        from_boxes = gpd.GeoDataFrame(from_boxes, geometry='__geometry')
+        to_boxes['__geometry'] = to_boxes.apply(
+            lambda x: shapely.geometry.box(x.xmin, x.ymin, x.xmax, x.ymax), axis=1)
+        to_boxes = gpd.GeoDataFrame(to_boxes, geometry='__geometry')
 
-      from_index = rtree.index.Index(interleaved=True)
-      for idx, row in from_boxes.iterrows():
-        from_index.insert(idx, row['__geometry'].bounds)
+        from_index = rtree.index.Index(interleaved=True)
+        for idx, row in from_boxes.iterrows():
+          from_index.insert(idx, row['__geometry'].bounds)
 
-      # TODO: improve performance
+        # TODO: improve performance
+        matched_from_idxes = set()
+        for _, to_box in to_boxes.iterrows():
+          from_idxes = list(from_index.intersection(to_box['__geometry'].bounds))
+          for from_idx in from_idxes:
+            from_box = from_boxes.loc[from_idx]
+            inters = from_box['__geometry'].intersection(to_box['__geometry']).area
+            iou = inters / (to_box['__geometry'].area + from_box['__geometry'].area - inters)
+            covered = inters / min(from_box['__geometry'].area, to_box['__geometry'].area)
+            if iou >= DIFF_IOU_THRESHOLD or covered >= DIFF_COVER_THRESHOLD:
+              matched_from_idxes.add(from_idx)
 
-      matched_from_idxes = set()
-      for _, to_box in to_boxes.iterrows():
-        from_idxes = list(from_index.intersection(to_box['__geometry'].bounds))
-        for from_idx in from_idxes:
-          from_box = from_boxes.loc[from_idx]
-          inters = from_box['__geometry'].intersection(to_box['__geometry']).area
-          iou = inters / (to_box['__geometry'].area + from_box['__geometry'].area - inters)
-          covered = inters / min(to_box['__geometry'].area, from_box['__geometry'].area)
-          if iou > DIFF_IOU_THRESHOLD or covered > DIFF_COVER_THRESHOLD:
-            matched_from_idxes.add(from_idx)
-
-      from_boxes = from_boxes[~from_boxes.index.isin(matched_from_idxes)]
-      del from_boxes['__geometry']
+        from_boxes = from_boxes[~from_boxes.index.isin(matched_from_idxes)]
+        del from_boxes['__geometry']
 
     if len(from_boxes) > 0:
       result_pkl_path = DIFF_RESULT_BBOX_DIR / 'diff' / from_pkl_path.name
       from_boxes.to_pickle(result_pkl_path)
       if OUTPUT_DEBUG_IMG_DIR is not None:
         draw_bbox(src_image_path=from_image_path,
-                  output_image_path=OUTPUT_DEBUG_IMG_DIR / (from_pkl_path.stem + '.diff.tiff'),
-                  src_bbox_df=from_boxes)
+                  output_image_path=OUTPUT_DEBUG_IMG_DIR / 'diff' / (from_pkl_path.stem + '.diff.tiff'),
+                  src_bbox_df=from_boxes, color=color)
 
   tasks = []
   for from_pkl_path in DIFF_FROM_BBOX_DIR.glob('*.pkl'):
@@ -690,7 +695,7 @@ def filter_bbox(df, model_inference_config):
           ((df.xmax-df.xmin)*(df.ymax-df.ymin) >= model_inference_config['confident_min_bbox_size'])]
   return df
 
-def draw_bbox(src_image_path, output_image_path, src_bbox_path=None, src_bbox_df=None, thickness=1):
+def draw_bbox(src_image_path, output_image_path, src_bbox_path=None, src_bbox_df=None, thickness=1, color=(50,100,200)):
   """
   draw bounding boxes on images
 
@@ -714,7 +719,7 @@ def draw_bbox(src_image_path, output_image_path, src_bbox_path=None, src_bbox_df
   image = np.array(Image.open(src_image_path).convert("RGB")).astype("uint8")
   boxes = src_bbox_df if src_bbox_df is not None else pd.read_pickle(src_bbox_path)
   image = image[:,:,::-1] # RGB => BGR
-  image = visualize.plot_predictions(image, boxes, color=(0, 165, 255), thickness=thickness)
+  image = visualize.plot_predictions(image, boxes, color=color, thickness=thickness)
   image = image[:,:,::-1] # BGR => RGB
 
   DATASET_IMG_META = {
@@ -843,22 +848,58 @@ def postprocess_render_images(model_inference_config,
     with ProgressBar():
       dask.compute(*tasks)
 
-def create_bbox_geojson(src_img_dir, src_bbox_diff, output_geojson_path, iou_threshold=0.2, size_threshold=0, output_pkl_path=None):
+def create_bbox_shapefile(src_img_dir, src_bbox_diff, output_shp_path,
+                          overlap_size=100, iou_threshold=0.1,
+                          size_min_threshold=0, size_max_threshold=9999999,
+                          output_pkl_path=None):
+  """
+  Create bbox geometry output as Shapefle
+
+  Parameters
+  ----------
+  src_img_dir : str
+    the path to the source image dataset folder
+  src_bbox_diff : str
+    the path to the bbox (pkl files) folder
+  output_shp_path : str
+    the path of output shapefile which contains only geometry features (epsg:4326)
+  overlap_size : int
+    overlapping pixel size of input images
+  iou_threshold : float
+    IoU NMS threshold
+  size_min_threshold : int
+    min area size of a bbox
+  size_max_threshold : int
+    max area size of a bbox
+  output_pkl_path : str
+    the path of output pkl file
+  """
+
   SRC_IMG_DIR = Path(src_img_dir)
   BBOX_DIR    = Path(src_bbox_diff)
   OUTPUT_BBOX_PATH = output_pkl_path
-  OUTPUT_GEOJSON_PATH = output_geojson_path
+  OUTPUT_SHP_PATH = output_shp_path
+  OVERLAP_SIZE = overlap_size
 
   # collect all bbox and convert bbox from local coordinates to geo coordinates
-  all_df = []
+  overlap_df = []
+  rest_df = []
   # collect all bbox
   for pkl_path in tqdm(list(BBOX_DIR.glob('*.pkl'))):
     # geo reference
     img_path = SRC_IMG_DIR / (pkl_path.stem + '.tiff')
     with rasterio.open(img_path) as src:
+      image_width = src.meta['width']
+      image_height = src.meta['height']
       image_crs = src.crs
       image_transform = src.transform
       img_proj = pyproj.Transformer.from_crs(image_crs, 4326, always_xy=True)
+
+    def copyLocal(r):
+      return pd.Series({'local_xmin': r.xmin,
+                        'local_ymin': r.ymin,
+                        'local_xmax': r.xmax,
+                        'local_ymax': r.ymax})
 
     def convertCoordsLocal(r):
       xmin, ymax = image_transform * [r.xmin, r.ymin]
@@ -872,45 +913,38 @@ def create_bbox_geojson(src_img_dir, src_bbox_diff, output_geojson_path, iou_thr
                         'xmax_epsg4326': xmax, 'ymax_epsg4326': ymax})
 
     df = pd.read_pickle(pkl_path)
-    df = df[(df.xmax-df.xmin)*(df.ymax-df.ymin) >= size_threshold]
+    # filter size
+    area = (df.xmax-df.xmin)*(df.ymax-df.ymin)
+    df = df[(area >= size_min_threshold) & (area < size_max_threshold)]
+    # remove nested and overlapped
+    df = run_nms(df, iou_threshold=iou_threshold)
+    df = remove_nested_bbox(df)
+
+    df = pd.concat([df, df.apply(copyLocal, axis=1)], axis=1)
     df.update(df.apply(convertCoordsLocal, axis=1))
     df = pd.concat([df, df.apply(convertLocalTo4326, axis=1)], axis=1)
 
+    # TODO: or with sliding windows
     if len(df) > 0:
-      all_df.append(df)
+      f = (df.local_xmin <= OVERLAP_SIZE) |  \
+          (df.local_ymin <= OVERLAP_SIZE) |  \
+          (df.local_xmax >= (image_width - OVERLAP_SIZE)) | \
+          (df.local_ymax >= (image_height - OVERLAP_SIZE))
+      overlap_df.append(df[f])
+      rest_df.append(df[~f])
 
-  df = pd.concat(all_df, ignore_index=True)
+  overlap_df = pd.concat(overlap_df, ignore_index=True)
+  rest_df = pd.concat(rest_df, ignore_index=True)
 
-  # TODO: improve performance. Run NMS on small tiles and overlapping parts
+  overlap_df = run_nms(overlap_df, iou_threshold=iou_threshold)
+  df = pd.concat([overlap_df, rest_df], ignore_index=True)
 
-  print("rows before NMS:", df.shape[0])
-  df = run_nms(df, iou_threshold=iou_threshold)
-  #df = remove_overlapping_bbox(df=df, iou_threshold=iou_threshold)
-  print("rows after NMS:", df.shape[0])
+  print("total:", df.shape[0])
 
   if OUTPUT_BBOX_PATH is not None:
     df.to_pickle(OUTPUT_BBOX_PATH)
 
-  # TODO: use geopandas to generate geojson
-
-  geoj = {
-    "type": "FeatureCollection",
-    "features": []
-  }
-
-  for _, r in df.iterrows():
-    tl = [r.xmin_epsg4326, r.ymin_epsg4326]
-    bl = [r.xmin_epsg4326, r.ymax_epsg4326]
-    br = [r.xmax_epsg4326, r.ymax_epsg4326]
-    tr = [r.xmax_epsg4326, r.ymin_epsg4326]
-    feature = {
-      "type": "Feature",
-      "geometry": {
-        "type": "Polygon",
-        "coordinates": [[list(tl) , list(tr), list(br), list(bl), list(tl)]]
-      }
-    }
-    geoj['features'].append(feature)
-
-  with open(OUTPUT_GEOJSON_PATH, 'w') as outfile:
-    json.dump(geoj, outfile)
+  df['geometry'] = df.apply(
+    lambda x: shapely.geometry.box(x.xmin_epsg4326, x.ymin_epsg4326, x.xmax_epsg4326, x.ymax_epsg4326), axis=1)
+  df = gpd.GeoDataFrame(df.geometry, crs="EPSG:4326")
+  df.to_file(OUTPUT_SHP_PATH)

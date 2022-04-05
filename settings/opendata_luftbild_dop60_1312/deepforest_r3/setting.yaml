@@ -64,11 +64,11 @@ model_inference_config:
     - patch_size: 1200
       patch_overlap: 0.3
       iou_threshold: 0.8
-      score_thresh: 0.5
+      score_thresh: 0.9
     - patch_size: 800
       patch_overlap: 0.3
       iou_threshold: 0.8
-      score_thresh: 0.4
+      score_thresh: 0.8
     - patch_size: 200
       patch_overlap: 0.2
       iou_threshold: 0.7

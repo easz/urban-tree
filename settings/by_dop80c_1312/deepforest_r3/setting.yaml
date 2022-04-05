@@ -59,7 +59,7 @@ model_params_config:
 model_inference_config:
   confident_min_bbox_size: 30
   confident_min_score: 0.8
-  morphology_factor: 2
+  morphology_factor: 3
   patch:
     - patch_size: 1200
       patch_overlap: 0.3

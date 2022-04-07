@@ -851,9 +851,10 @@ def postprocess_render_images(model_inference_config,
 def create_bbox_shapefile(src_img_dir, src_bbox_diff, output_shp_path,
                           overlap_size=100, iou_threshold=0.1,
                           size_min_threshold=0, size_max_threshold=9999999,
-                          output_pkl_path=None):
+                          output_pkl_path=None, geometry_only=True):
   """
-  Create bbox geometry output as Shapefle
+  Create bbox geometry output as Shapefle which contins properties with local pixel coordinates,
+  global epsg:3857 coordinates. Geometry is in epsg:4326.
 
   Parameters
   ----------
@@ -873,6 +874,8 @@ def create_bbox_shapefile(src_img_dir, src_bbox_diff, output_shp_path,
     max area size of a bbox
   output_pkl_path : str
     the path of output pkl file
+  geometry_only : bool
+    output only geometry
   """
 
   SRC_IMG_DIR = Path(src_img_dir)
@@ -946,5 +949,13 @@ def create_bbox_shapefile(src_img_dir, src_bbox_diff, output_shp_path,
 
   df['geometry'] = df.apply(
     lambda x: shapely.geometry.box(x.xmin_epsg4326, x.ymin_epsg4326, x.xmax_epsg4326, x.ymax_epsg4326), axis=1)
-  df = gpd.GeoDataFrame(df.geometry, crs="EPSG:4326")
+
+  if geometry_only:
+    df = gpd.GeoDataFrame(df.geometry, crs="EPSG:4326")
+  else:
+    df = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
+    del df['xmin_epsg4326']
+    del df['ymin_epsg4326']
+    del df['xmax_epsg4326']
+    del df['ymax_epsg4326']
   df.to_file(OUTPUT_SHP_PATH)

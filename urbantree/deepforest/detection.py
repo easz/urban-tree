@@ -392,6 +392,12 @@ def run_nms(df, use_soft_nms=False, iou_threshold=0.15,
     bbox_left_idx = nms(boxes=boxes, scores=scores, iou_threshold=iou_threshold).numpy()
   return df.iloc[bbox_left_idx]
 
+def filter(df, model_inference_config, iou_threshold):
+  df = filter_bbox(df=df, model_inference_config=model_inference_config)
+  df = run_nms(df=df, iou_threshold=iou_threshold)
+  df = remove_nested_bbox(df=df)
+  return df
+
 def calc_diff(diff_from_setting_path,
               diff_to_setting_path,
               aggregate_iou_threshold,
@@ -459,9 +465,9 @@ def calc_diff(diff_from_setting_path,
     from_image_path = DIFF_FROM_IMG_DIR / (from_pkl_path.stem + '.tiff')
     from_boxes = pd.read_pickle(from_pkl_path)
     from_boxes.reset_index(drop=True, inplace=True)
-    from_boxes = filter_bbox(from_boxes, DIFF_FROM_INFERENCE_PARAM)
-    from_boxes = run_nms(df=from_boxes, iou_threshold=AGGREGATED_IOU_THRESHOLD)
-    from_boxes = remove_nested_bbox(from_boxes)
+    from_boxes = filter(df=from_boxes,
+                        model_inference_config=DIFF_FROM_INFERENCE_PARAM,
+                        iou_threshold=AGGREGATED_IOU_THRESHOLD)
     if len(from_boxes) == 0:
       return
     if OUTPUT_DEBUG_IMG_DIR is not None:
@@ -476,9 +482,9 @@ def calc_diff(diff_from_setting_path,
       to_image_path = DIFF_TO_IMG_DIR / (to_pkl_path.stem + '.tiff')
       to_boxes = pd.read_pickle(to_pkl_path)
       to_boxes.reset_index(drop=True, inplace=True)
-      to_boxes = filter_bbox(to_boxes, DIFF_TO_INFERENCE_PARAM)
-      to_boxes = run_nms(df=to_boxes, iou_threshold=AGGREGATED_IOU_THRESHOLD)
-      to_boxes = remove_nested_bbox(to_boxes)
+      to_boxes = filter(df=to_boxes,
+                    model_inference_config=DIFF_TO_INFERENCE_PARAM,
+                    iou_threshold=AGGREGATED_IOU_THRESHOLD)
       if OUTPUT_DEBUG_IMG_DIR is not None:
         draw_bbox(src_image_path=to_image_path,
                   output_image_path=OUTPUT_DEBUG_IMG_DIR / 'to' / (from_pkl_path.stem + '.to.tiff'),
@@ -682,7 +688,7 @@ def filter_bbox(df, model_inference_config):
   DataFrame
     filtered bounding boxes
   """
-  if len(df) == 0:
+  if len(df) == 0 or model_inference_config is None:
     return df
 
   # load bbox: filter after score_thresh, keep small trees only with very high scores
@@ -849,6 +855,7 @@ def postprocess_render_images(model_inference_config,
       dask.compute(*tasks)
 
 def create_bbox_shapefile(src_img_dir, src_bbox_diff, output_shp_path,
+                          model_inference_config=None,
                           overlap_size=100, iou_threshold=0.1,
                           size_min_threshold=0, size_max_threshold=9999999,
                           output_pkl_path=None, geometry_only=True):
@@ -866,12 +873,14 @@ def create_bbox_shapefile(src_img_dir, src_bbox_diff, output_shp_path,
     the path of output shapefile which contains only geometry features (epsg:4326)
   overlap_size : int
     overlapping pixel size of input images
+  model_inference_config : dict
+    inference parameter
   iou_threshold : float
     IoU NMS threshold
   size_min_threshold : int
-    min area size of a bbox
+    min area size of a bbox (pixel)
   size_max_threshold : int
-    max area size of a bbox
+    max area size of a bbox (pixel)
   output_pkl_path : str
     the path of output pkl file
   geometry_only : bool
@@ -919,9 +928,8 @@ def create_bbox_shapefile(src_img_dir, src_bbox_diff, output_shp_path,
     # filter size
     area = (df.xmax-df.xmin)*(df.ymax-df.ymin)
     df = df[(area >= size_min_threshold) & (area < size_max_threshold)]
-    # remove nested and overlapped
-    df = run_nms(df, iou_threshold=iou_threshold)
-    df = remove_nested_bbox(df)
+    model_inference_config
+    df = filter(df=df, model_inference_config=model_inference_config, iou_threshold=iou_threshold)
 
     df = pd.concat([df, df.apply(copyLocal, axis=1)], axis=1)
     df.update(df.apply(convertCoordsLocal, axis=1))

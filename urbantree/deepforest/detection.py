@@ -114,7 +114,7 @@ def generate_response(dataset_train_dir, dataset_response_dir,
                       model_trainer_min_bbox_size,
                       model_trainer_min_bbox_ratio,
                       model_trainer_validation_ratio,
-                      model_trainer_patch_sizes=[],
+                      model_trainer_patch_sizes=None,
                       model_trainer_patch_overlap_size=32,
                       **ignored):
   """
@@ -132,7 +132,8 @@ def generate_response(dataset_train_dir, dataset_response_dir,
     minimal ratio (short_side/long_side) of object bbox
   model_trainer_validation_ratio : float
     train/validation split ratio
-  model_trainer_patch_sizes : list of int
+  
+  : list of int
     a list of patch sizes for training images
   model_trainer_patch_overlap_size : int
     overlapping size of cropped training images with the given patch size
@@ -151,7 +152,7 @@ def generate_response(dataset_train_dir, dataset_response_dir,
   # output folder of response (annotation csv fot torch vision)
   RESPONSE_DEEPFOREST_DIR = Path(dataset_response_dir)
 
-  PATCH_SIZES        = model_trainer_patch_sizes
+  PATCH_SIZES        = model_trainer_patch_sizes if model_trainer_patch_sizes is not None else []
   PATCH_OVERLAP_SIZE = model_trainer_patch_overlap_size
   VALIDATION_RATIO   = model_trainer_validation_ratio
   TARGET_MIN_SIZE    = model_trainer_min_bbox_size

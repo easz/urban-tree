@@ -2,7 +2,7 @@
 
 ## detect urban trees with the help of aerial images
 
-An interactive [map](https://easz.github.io/urban-tree/index-s.html) to find missing trees.
+An interactive [map](https://easz.github.io/urban-tree/index-s.html) to find missing trees in Muninch between 2017 and 2020.
 
 A short introduction and background story: [here](https://tsungi.medium.com/urban-trees-in-munich-city-b0e7db7c2c18).
 

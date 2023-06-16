@@ -2,6 +2,8 @@
 
 ## detect urban trees with the help of aerial images
 
+An interactive [map](https://easz.github.io/urban-tree/index-s.html) to find missing trees.
+
 A short introduction and background story: [here](https://tsungi.medium.com/urban-trees-in-munich-city-b0e7db7c2c18).
 
 ![Munich Urban Tree Canopy](assets/opendata_luftbild_dop60_y2017_canopy.png "Munich Urban Tree Canopy")
@@ -9,8 +11,8 @@ A short introduction and background story: [here](https://tsungi.medium.com/urba
 ## Goals
 
  - [x] determine urban tree coverage in Munich City 🍺 from different years and visualize result in a map to assist finding missing trees
- - [ ] identify missing trees (or ideally new planted trees) automatically and reliably
- - [ ] enhance tree detection performance (e.g. precision/recall)
+ - [x] identify missing trees (or ideally new planted trees) automatically
+ - [ ] enhance tree detection performance with better images and transfer learning
  - [ ] gather tree (crown) information and serve as input for OpenStreetMap or further tree registration purpose
  - [ ] try with different locations (e.g. cities)
 

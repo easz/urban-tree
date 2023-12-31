@@ -61,6 +61,8 @@ You may find any trained model in the [releases](https://github.com/easz/urban-t
  - [Digitales Orthophoto 80cm (BVV)](https://geodatenonline.bayern.de/geodatenonline/seiten/wms_dop80cm): images with 0.8m resolution taken on 26-April-2020
  - [Luftbild München 2019 RGB 20cm](https://geoportal.muenchen.de/geoserver/gsm/wms?service=WMS&version=2.0.0&request=GetCapabilities): images with 0.2m resolution taken probably on a winter day in 2019
 
+See also [Luftbilder München](https://github.com/easz/luftbilder.muenchen)
+
 #### Retrieval of aeriel images
 
 Use `wms-tile-get` to download map tiles from WMS and store in [Slippy Map structure](https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames) (i.e. XYZ format). *Alternatively arbitrary extents of map images can also be directly requested from WMS server. However, XYZ format is preferable for offline data storage.*
